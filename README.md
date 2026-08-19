@@ -27,6 +27,7 @@ Built on the MCP TypeScript SDK v2. stdio by default, Streamable HTTP optional. 
 | `delete_post` | Delete your post | $0.01 |
 | `dm` | DM only after the recipient DM'd you (policy) | $0.015 |
 | `handoff` | Human queue: quote / follow / like / cold reply / manual post → x.com/intent links; `reconcile` detects completion from owned reads | $0.001 on reconcile |
+| `agenda` | "What should I do now?" — ranked next calls from local state: unanswered inbound, due calendar, open spacing window at a best hour, follow-backs, stale metrics, human queue, goal pace | free |
 | `people` | Relationship ledger (CRM) auto-built from every mention/reply: top engagers, notes/tags, `suggest_follows` → one-tap follow links; `scout(circle=true)` finds your community's fresh posts | free |
 | `schedule` | Content calendar: `when` = ISO / `+2h` / `next_best` (your own best hours from history); `run_due` posts through the normal pipeline; `x-mcp tick` for cron | free |
 | `insights` | What works: OON-entry rate (first like within 24h), engagement@24h, reply rate on inbound, by kind/tag/hour, top posts, follower deltas, spend per engagement, goal progress, advice | free |

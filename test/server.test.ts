@@ -79,7 +79,7 @@ describe('x-mcp end to end (mock X API)', () => {
     const { client, close } = await connectInMemory();
     const tools = await client.listTools();
     const names = tools.tools.map((t) => t.name).sort();
-    expect(names).toEqual(['account_pulse', 'approvals', 'brand', 'conversation', 'delete_post', 'dm', 'doctor', 'draft_check', 'handoff', 'ideas', 'inbox', 'insights', 'people', 'post_performance', 'publish', 'reply', 'report', 'repost', 'schedule', 'scout', 'spend', 'who']);
+    expect(names).toEqual(['account_pulse', 'agenda', 'approvals', 'brand', 'conversation', 'delete_post', 'dm', 'doctor', 'draft_check', 'handoff', 'ideas', 'inbox', 'insights', 'people', 'post_performance', 'publish', 'reply', 'report', 'repost', 'schedule', 'scout', 'spend', 'who']);
     const res = await client.listResources();
     expect(res.resources.map((r) => r.uri).sort()).toEqual(['x://boundary', 'x://handoff', 'x://playbook']);
     const pb = await client.readResource({ uri: 'x://playbook' });
@@ -243,6 +243,8 @@ describe('x-mcp end to end (mock X API)', () => {
     const I = ins.structuredContent as any;
     expect(I.originals).toBeGreaterThanOrEqual(1);
     expect(I.goals.followers.target).toBe(100);
+    const ag = await client.callTool({ name: 'agenda', arguments: {} });
+    expect(((ag.structuredContent as any).items as any[]).length).toBeGreaterThan(0);
     const rep = await client.callTool({ name: 'report', arguments: { days: 7 } });
     expect(text(rep)).toContain('# @rtresearching');
     expect(text(rep)).toContain('## People');

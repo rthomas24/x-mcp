@@ -482,6 +482,57 @@ Pair with scout(circle=true) to find their fresh posts to engage with.`,
     },
   );
 
+  // ------------------------------------------------------------------ agenda
+  tool(
+    server,
+    'agenda',
+    {
+      title: 'What to do right now — a ranked to-do list from local state (free)',
+      description: 'No network. Looks at unanswered inbound, due scheduled posts, whether the spacing window is open and how close the next best hour is, open ideas, people worth following back, stale metric snapshots, the human queue, and goal pace — and returns a prioritised list of concrete next calls. Call it whenever you finish a step.',
+      inputSchema: z.object({ limit: z.number().int().min(1).max(20).optional() }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      const s = ctx.store.s;
+      const now = Date.now();
+      const items: { priority: number; action: string; call: string; why: string }[] = [];
+      const unanswered = Object.entries(s.seenMentions).filter(([id]) => !Object.hasOwn(s.repliedConversations, id) && s.mentionAuthors[id] && s.mentionAuthors[id] !== s.me?.id).length;
+      if (unanswered) items.push({ priority: 95, action: `Answer ${unanswered} unanswered mention(s)/reply(ies)`, call: 'inbox → conversation → reply', why: 'reply weight (5, 20 from mutuals) is the biggest head you can move; all of these summoned you so the API allows it' });
+      const due = s.scheduled.filter((x) => x.status === 'pending' && x.not_before <= now).length;
+      if (due) items.push({ priority: 90, action: `Post ${due} due scheduled item(s)`, call: 'schedule(action="run_due")', why: 'they were queued for this slot' });
+      const lastOriginal = Math.max(0, ...Object.values(s.posts).filter((p) => p.kind === 'original').map((p) => p.created_at));
+      const gapH = lastOriginal ? (now - lastOriginal) / HOUR : Infinity;
+      const bt = bestTimes(Object.values(s.posts), s.metrics, now);
+      const nextBestH = (Date.parse(bt.next_best_iso) - now) / HOUR;
+      const openIdeas = s.ideas.filter((i) => i.status === 'open');
+      if (gapH >= ctx.cfg.minHoursBetweenOriginals) {
+        if (nextBestH <= 1) items.push({ priority: 85, action: 'Publish an original now — spacing window open and a best hour is here', call: openIdeas.length ? `ideas(list) → draft_check → publish(tags=[...], idea_id=…)` : 'draft_check → publish(tags=[...])', why: `last original ${Number.isFinite(gapH) ? `${gapH.toFixed(1)}h` : 'never'}; ${bt.enough_data ? 'best hour from your history' : 'default slot'}` });
+        else items.push({ priority: 60, action: `Draft the next original and schedule it for ${bt.next_best_iso}`, call: 'draft_check → schedule(action="add", when="next_best", post={...})', why: `spacing open; next best slot in ${nextBestH.toFixed(1)}h` });
+      } else items.push({ priority: 30, action: `Hold originals for ${(ctx.cfg.minHoursBetweenOriginals - gapH).toFixed(1)}h`, call: '—', why: 'author-diversity decay / one cold-start lift per request' });
+      const followBacks = Object.values(s.people).filter((p) => !p.followed_by_me && p.replies_to_me + p.mentions_of_me >= 2).length;
+      if (followBacks) items.push({ priority: 70, action: `Queue ${followBacks} follow-back(s) for the human`, call: 'people(action="suggest_follows", queue=true)', why: 'mutuals get +15 reply weight on your originals' });
+      const pendingH = s.handoff.filter((h) => h.status === 'pending').length;
+      if (pendingH) items.push({ priority: 55, action: `${pendingH} human handoff item(s) waiting`, call: 'handoff(action="reconcile") then remind the owner of x://handoff', why: 'quotes/follows/cold replies only pay off when tapped' });
+      const lastSnap = Math.max(0, ...Object.values(s.metrics).map((m) => m.at(-1)?.ts ?? 0));
+      if (Object.keys(s.posts).length && now - lastSnap > 6 * HOUR) items.push({ priority: 50, action: 'Snapshot metrics (stale >6h)', call: 'post_performance', why: 'insights/best_times/OON-entry rate depend on snapshots' });
+      if (!openIdeas.length) items.push({ priority: 45, action: 'Idea bank is empty — scout and bank 3 ideas', call: 'scout(...) / scout(circle=true) → ideas(action="add")', why: 'keeps the cadence without improvising' });
+      if (!s.brand.lane) items.push({ priority: 40, action: 'Set the brand lane/voice/goals once', call: 'brand(action="set", lane=…, add_voice=[…], goals={…})', why: 'consistent lane = the ranker builds a prior on your author id' });
+      const g = s.brand.goals.originals_per_week;
+      if (g) {
+        const week = Object.values(s.posts).filter((p) => p.kind === 'original' && p.created_at > now - 7 * DAY).length;
+        if (week < g) items.push({ priority: 35, action: `Cadence: ${week}/${g} originals this week`, call: 'ideas → schedule', why: 'goal from brand book' });
+      }
+      const spend = ctx.ledger.summary();
+      if (spend.pct_used >= 80) items.push({ priority: 65, action: `Budget ${spend.pct_used}% used — prefer owned reads, pause scout`, call: 'spend', why: 'monthly budget stop' });
+      items.sort((a, b) => b.priority - a.priority);
+      const top = items.slice(0, args.limit ?? 8);
+      return ok(top.length ? top.map((i, n) => `${n + 1}. ${i.action}
+   → ${i.call}
+   (${i.why})`).join('
+') : 'Nothing pressing. Post an original at the next best hour.', { items: top, next_best_iso: bt.next_best_iso, spacing_open: gapH >= ctx.cfg.minHoursBetweenOriginals });
+    },
+  );
+
   // ------------------------------------------------------------------ report
   tool(
     server,

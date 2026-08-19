@@ -1,11 +1,11 @@
 /**
  * x-mcp — an opinionated MCP server for running an X account with an agent.
  *
- * Tools (22):
+ * Tools (23):
  *   account_pulse · post_performance · inbox · conversation · scout · who     (read, cheap)
  *   publish · reply · repost · delete_post · dm                                (write, guarded)
  *   handoff                                                                    (human queue: quote/follow/like/cold reply → intent links, auto-reconciled)
- *   people · schedule · insights · brand · ideas · report                      (business layer: CRM, calendar, learning loop, brand book, pipeline, digest)
+ *   agenda · people · schedule · insights · brand · ideas · report             (business layer: CRM, calendar, learning loop, brand book, pipeline, digest)
  *   draft_check · spend · doctor · approvals                                   (meta)
  * Resources: x://playbook (the For You rules), x://boundary (what the API allows on pay-per-use), x://handoff (live queue)
  * Prompt:    operate (the working loop)
