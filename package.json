@@ -1,0 +1,67 @@
+{
+  "name": "x-mcp",
+  "version": "0.1.0",
+  "description": "Opinionated MCP server for running an X account with an agent: algorithm-aware publishing, inbox/scout, a human handoff queue with one-tap intent links, a pay-per-use cost ledger, and hard safety rails. X API v2, OAuth 2.0 PKCE.",
+  "license": "MIT",
+  "author": "Ryan Thomas",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "x",
+    "twitter",
+    "x-api",
+    "agents",
+    "claude",
+    "hermes",
+    "social-media",
+    "automation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rthomas24/x-mcp.git"
+  },
+  "homepage": "https://github.com/rthomas24/x-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/rthomas24/x-mcp/issues"
+  },
+  "bin": {
+    "x-mcp": "dist/bin.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsx src/bin.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "start": "node dist/bin.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsdown": "^0.15.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}
