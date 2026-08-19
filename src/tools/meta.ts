@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { BOUNDARY } from '../playbook.js';
 import { PRICE } from '../pricing.js';
-import { ALGO, WEIGHTS, analyzeDraft, diversityMultiplier, type DraftAnalysis } from '../rules.js';
+import { ALGO, WEIGHTS, analyzeDraft, brandCheck, diversityMultiplier, type DraftAnalysis } from '../rules.js';
 import { SCOPES } from '../x/auth.js';
 import { Ctx, ok, tool } from './context.js';
 
@@ -33,9 +33,19 @@ export function registerMetaTools(server: McpServer, ctx: Ctx): void {
     },
     async (args) => {
       const opts = { kind: args.kind ?? 'original', limit: args.limit, myFollowers: ctx.followers } as const;
-      const main = analyzeDraft(args.text, opts);
-      const variants = (args.variants ?? []).map((v) => ({ text: v, ...analyzeDraft(v, opts) }));
-      return ok([describeAnalysis(main, 'Draft'), ...variants.map((v, i) => describeAnalysis(v, `Variant ${i + 1}`))].join('\n\n'), { draft: main, variants });
+      const withBrand = (text: string) => {
+        const a = analyzeDraft(text, opts);
+        const b = brandCheck(ctx.store.s.brand, text);
+        if (b.banned_hits.length) {
+          a.warnings.push(`Brand: banned words present — ${b.banned_hits.join(', ')}`);
+          a.score = Math.max(0, a.score - 30);
+        }
+        return { ...a, brand: b };
+      };
+      const main = withBrand(args.text);
+      const variants = (args.variants ?? []).map((v) => ({ text: v, ...withBrand(v) }));
+      const reminders = main.brand.reminders.length ? `\n\n${main.brand.reminders.join(' · ')}` : '';
+      return ok([describeAnalysis(main, 'Draft'), ...variants.map((v, i) => describeAnalysis(v, `Variant ${i + 1}`))].join('\n\n') + reminders, { draft: main, variants });
     },
   );
 

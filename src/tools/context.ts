@@ -3,7 +3,8 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import type { z } from 'zod';
 import type { Config } from '../config.js';
 import { Ledger, type Op, costOf, utcDayKey } from '../pricing.js';
-import type { QueuedAction, Store, WriteTool } from '../store.js';
+import type { Person, QueuedAction, Store, WriteTool } from '../store.js';
+import { authorBand, isMutual } from '../rules.js';
 import { XClient, type User } from '../x/client.js';
 
 export type ToolResult = {
@@ -77,6 +78,46 @@ export class Ctx {
       if (s.followerSnapshots.length > 500) s.followerSnapshots = s.followerSnapshots.slice(-500);
     });
     return u;
+  }
+
+  /**
+   * Relationship ledger: record that a person interacted with us (or we with them).
+   * Called from inbox/account_pulse (mentions, replies), reply, and handoff reconcile.
+   */
+  touchPerson(u: { id: string; username: string; name?: string; metrics?: User['metrics']; connection?: string[] }, event: 'mention' | 'reply_to_me' | 'my_reply' | 'followed' | 'seen', postId?: string): Person {
+    let out!: Person;
+    this.store.update((s) => {
+      const now = Date.now();
+      const p: Person = s.people[u.id] ?? { id: u.id, username: u.username, first_seen: now, last_seen: now, mentions_of_me: 0, replies_to_me: 0, my_replies: 0, tags: [], notes: [] };
+      p.username = u.username || p.username;
+      if (u.name) p.name = u.name;
+      if (u.metrics?.followers) {
+        p.followers = u.metrics.followers;
+        p.band = authorBand(u.metrics.followers).band;
+      }
+      if (u.connection) {
+        p.follows_me = u.connection.includes('followed_by');
+        p.followed_by_me = u.connection.includes('following');
+        p.mutual = isMutual(u.connection);
+      }
+      if (event !== 'my_reply') p.last_seen = now;
+      if (event === 'mention') p.mentions_of_me++;
+      if (event === 'reply_to_me') p.replies_to_me++;
+      if (event === 'my_reply') p.my_replies++;
+      if (event === 'followed') {
+        p.followed_by_me = true;
+        p.mutual = Boolean(p.follows_me);
+      }
+      if (postId && event !== 'my_reply') p.last_post_id = postId;
+      s.people[u.id] = p;
+      out = p;
+    });
+    return out;
+  }
+
+  /** Engagement score for ranking people: inbound weighs more than outbound. */
+  static personScore(p: Person): number {
+    return p.replies_to_me * 3 + p.mentions_of_me * 2 + p.my_replies + (p.mutual ? 2 : 0);
   }
 
   /** Follower count without a network call (last snapshot). */

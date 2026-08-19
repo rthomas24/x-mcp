@@ -7,6 +7,7 @@
  *   x-mcp approve <id>|--all   execute queued actions (approval mode / force overrides)
  *   x-mcp queue                list queued API actions and the human handoff queue
  *   x-mcp spend | doctor       ledger / health
+ *   x-mcp tick                 cron entry point: post due scheduled items, reconcile handoffs, snapshot metrics
  */
 import { loadConfig } from './config.js';
 import { describeHandoff } from './format.js';
@@ -36,6 +37,8 @@ Usage:
   x-mcp queue                 show approval queue + human handoff queue with links
   x-mcp spend                 month-to-date spend
   x-mcp doctor                auth/config health
+  x-mcp tick                  run from cron every ~15 min: schedule run_due + handoff reconcile + post_performance snapshot
+  x-mcp report [days]         owner digest (markdown) for the last N days (default 7)
 
 Env (read from the environment or <state dir>/.env — never from the current directory):
   X_CLIENT_ID (required)  X_CLIENT_SECRET (confidential apps only)
@@ -70,6 +73,21 @@ async function main(): Promise<void> {
   if (cmd === 'spend' || cmd === 'doctor') {
     const { client, close } = await connectInMemory({ config: cfg });
     console.log(resultText(await client.callTool({ name: cmd, arguments: cmd === 'spend' ? { recent: 15 } : {} })));
+    await close();
+    return;
+  }
+  if (cmd === 'tick') {
+    const { client, close } = await connectInMemory({ config: cfg });
+    for (const [name, a] of [['schedule', { action: 'run_due' }], ['handoff', { action: 'reconcile' }], ['post_performance', { max: 10 }]] as const) {
+      const r = await client.callTool({ name, arguments: a });
+      console.log(`[${name}] ${resultText(r).split('\n')[0]}`);
+    }
+    await close();
+    return;
+  }
+  if (cmd === 'report') {
+    const { client, close } = await connectInMemory({ config: cfg });
+    console.log(resultText(await client.callTool({ name: 'report', arguments: { days: Number(args[1] ?? 7) } })));
     await close();
     return;
   }

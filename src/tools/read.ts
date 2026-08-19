@@ -109,6 +109,21 @@ function refreshMyPost(ctx: Ctx, p: Post, me: User): MyPostRow {
   };
 }
 
+/** Ingest a batch of mentions: update the relationship ledger once per mention and advance the seen/lastMentionId markers. */
+function ingestMentions(ctx: Ctx, posts: Post[], users: Map<string, User>, me: User): void {
+  for (const p of posts) {
+    const u = p.author_id ? users.get(p.author_id) : undefined;
+    if (u && u.id !== me.id && !Object.hasOwn(ctx.store.s.seenMentions, p.id)) ctx.touchPerson(u, summonedBy(p, me).via === 'reply_to_me' ? 'reply_to_me' : 'mention', p.id);
+  }
+  ctx.store.update((s) => {
+    for (const p of posts) {
+      s.seenMentions[p.id] ??= Date.now();
+      if (p.author_id) s.mentionAuthors[p.id] = p.author_id;
+      if (!s.lastMentionId || BigInt(p.id) > BigInt(s.lastMentionId)) s.lastMentionId = p.id;
+    }
+  });
+}
+
 const rowLine = (r: MyPostRow): string => `  • ${oneLine(r.text, 60)} — ${r.metrics.likes}♥ ${r.metrics.replies}↩ ${r.metrics.impressions ?? '?'}👁 (${r.milestones.age_hours}h)${r.velocity ? ` ${r.velocity.likes_per_hour}♥/h` : ''} ${r.milestones.notes[0] ?? ''}`;
 
 export function registerReadTools(server: McpServer, ctx: Ctx): void {
@@ -135,6 +150,7 @@ export function registerReadTools(server: McpServer, ctx: Ctx): void {
       const c1 = ctx.chargeReads('account_pulse', 'read.owned', mine.posts.map((p) => `p:${p.id}`), 'my posts');
       const c2 = ctx.chargeReads('account_pulse', 'read.owned', men.posts.map((p) => `m:${p.id}`), 'mentions');
       const rows = mine.posts.map((p) => refreshMyPost(ctx, p, me));
+      ingestMentions(ctx, men.posts, men.users, me);
       const inbox = men.posts.filter((p) => !Object.hasOwn(ctx.store.s.repliedConversations, p.id) && p.author_id !== me.id).map((p) => describePost(p, men.users));
       const pendingHandoff = ctx.store.s.handoff.filter((q) => q.status === 'pending').length;
       const pendingApprovals = ctx.store.s.queue.filter((q) => q.status === 'pending').length;
@@ -200,8 +216,8 @@ export function registerReadTools(server: McpServer, ctx: Ctx): void {
     'inbox',
     {
       title: 'Mentions and replies to you, prioritised and marked replyable',
-      description: `Owned read ($${PRICE['read.owned']}/item). Lists posts that @mention you or reply to you, newest first, with the author's follower band and connection status. Every item here summoned you, so the reply tool is allowed to answer it via the API. Prioritises: replies on your originals (each answered reply keeps the conversation alive — reply weight is the biggest realistic head), then mutuals, then large accounts. Marks items as seen; pass include_seen=true to list again. ${UNTRUSTED_NOTE}`,
-      inputSchema: z.object({ max: z.number().int().min(5).max(100).optional(), include_seen: z.boolean().optional() }),
+      description: `Owned read ($${PRICE['read.owned']}/item). Lists posts that @mention you or reply to you, newest first, with the author's follower band and connection status. Every item here summoned you, so the reply tool is allowed to answer it via the API. Prioritises: replies on your originals (each answered reply keeps the conversation alive — reply weight is the biggest realistic head), then mutuals, then large accounts. Lists unanswered items by default; each mention also updates the relationship ledger (people tool). ${UNTRUSTED_NOTE}`,
+      inputSchema: z.object({ max: z.number().int().min(5).max(100).optional(), include_answered: z.boolean().optional().describe('Also list mentions you already replied to.') }),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async (args) => {
@@ -209,7 +225,7 @@ export function registerReadTools(server: McpServer, ctx: Ctx): void {
       const r = await ctx.client.mentions(me.id, { max: args.max ?? 30 });
       const c = ctx.chargeReads('inbox', 'read.owned', r.posts.map((p) => `m:${p.id}`));
       const items = r.posts
-        .filter((p) => p.author_id !== me.id && (args.include_seen || !Object.hasOwn(ctx.store.s.seenMentions, p.id)))
+        .filter((p) => p.author_id !== me.id && (args.include_answered || !Object.hasOwn(ctx.store.s.repliedConversations, p.id)))
         .map((p) => {
           const d = describePost(p, r.users);
           const via = summonedBy(p, me).via;
@@ -219,12 +235,7 @@ export function registerReadTools(server: McpServer, ctx: Ctx): void {
           return { ...d, kind: via === 'reply_to_me' ? 'reply_to_me' : d.is_quote ? 'quote_or_mention' : 'mention', on_my_post: onMyPost, mutual, already_replied: Object.hasOwn(ctx.store.s.repliedConversations, p.id), priority, api_replyable: true };
         })
         .sort((a, b) => b.priority - a.priority);
-      ctx.store.update((s) => {
-        for (const p of r.posts) {
-          s.seenMentions[p.id] ??= Date.now();
-          if (!s.lastMentionId || BigInt(p.id) > BigInt(s.lastMentionId)) s.lastMentionId = p.id;
-        }
-      });
+      ingestMentions(ctx, r.posts, r.users, me);
       const text = items.length
         ? items.map((i) => `• [${i.id}] @${who(i)} (${i.author?.band ?? '?'}${i.mutual ? ', mutual' : ''}${i.on_my_post ? ', on your post' : ''}) ${i.already_replied ? '✓answered ' : ''}— ${oneLine(i.text, 110)}`).join('\n')
         : 'No new mentions.';
@@ -264,23 +275,33 @@ export function registerReadTools(server: McpServer, ctx: Ctx): void {
     server,
     'scout',
     {
-      title: 'Scout the niche: find conversations worth joining, priced and ranked',
+      title: 'Scout the niche (or your own circle): conversations worth joining, priced and ranked',
       description: `Search recent posts (7-day window) with X operators, then rank the results as *opportunities*: author follower band (≤1k peers follow back; ≤60k replies are not LLM-scored; >60k they are), freshness, whether it ends in a question, engagement so far, and whether you already replied. Cold replies to these are NOT possible via the API on pay-per-use (X rejects un-summoned replies) — each result carries a one-tap intent link and you can push the best ones to the human with handoff(kind="cold_reply"). Public reads $${PRICE['read.post']}/post; hard-capped at ${ctx.cfg.maxReadsPerCall} per call and deduplicated per UTC day. Default filters add \`-is:retweet -is:reply\` and lang:en unless you pass raw=true. ${UNTRUSTED_NOTE}`,
       inputSchema: z.object({
-        query: z.string().describe('Search terms/operators, e.g. `(MLX OR mtplx OR "local llm") mac`'),
+        query: z.string().default('').describe('Search terms/operators, e.g. `(MLX OR mtplx OR "local llm") mac`. Optional when circle=true.'),
         max: z.number().int().min(10).max(100).optional().describe('Results to fetch (default 20).'),
         raw: z.boolean().optional().describe('Do not append the default filters.'),
         lang: z.string().regex(/^[a-z]{2}$/).optional().describe('Language filter (default en).'),
         min_followers: z.number().int().optional().describe('Drop authors below this follower count.'),
         max_followers: z.number().int().optional().describe('Drop authors above this follower count (e.g. 60000 to avoid LLM-scored threads).'),
         sort: z.enum(['recency', 'relevancy']).optional(),
+        circle: z.boolean().optional().describe('Search recent originals from your own community instead: the top people in your relationship ledger (people tool). Engaging back with them is the cheapest growth loop; query is then optional.'),
       }),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async (args) => {
       const me = await ctx.me();
       const max = Math.min(args.max ?? 20, ctx.cfg.maxReadsPerCall);
-      const q = args.raw ? args.query : `${args.query} -is:retweet -is:reply lang:${args.lang ?? 'en'}`;
+      let base = args.query;
+      if (args.circle) {
+        const top = Object.values(ctx.store.s.people)
+          .filter((p) => p.id !== me.id)
+          .sort((a, b) => Ctx.personScore(b) - Ctx.personScore(a))
+          .slice(0, 12);
+        if (!top.length) throw new Error('Your relationship ledger is empty — run inbox/account_pulse first, or search without circle=true.');
+        base = `(${top.map((p) => `from:${p.username}`).join(' OR ')})${args.query ? ` ${args.query}` : ''}`;
+      }
+      const q = args.raw ? base : `${base} -is:retweet -is:reply lang:${args.lang ?? 'en'}`;
       const warn = ctx.affordable(costOf('read.post', max), `scout (${max} reads)`);
       const r = await ctx.client.searchRecent(q, { max, sort: args.sort ?? 'recency' });
       const c = ctx.chargeReads('scout', 'read.post', r.posts.map((p) => `p:${p.id}`), q.slice(0, 60));

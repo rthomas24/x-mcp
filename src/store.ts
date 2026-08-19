@@ -39,6 +39,9 @@ export interface MyPost {
   has_url: boolean;
   media_ids?: string[];
   video_seconds?: number;
+  /** Free-form experiment tags (e.g. "video", "receipt", "question") for `insights`. */
+  tags?: string[];
+  idea_id?: string;
 }
 
 export interface MetricSnapshot {
@@ -85,6 +88,56 @@ export interface HandoffItem {
   resolved_post_id?: string;
 }
 
+/** A person the account has interacted with — the relationship ledger (CRM). */
+export interface Person {
+  id: string;
+  username: string;
+  name?: string;
+  followers?: number;
+  band?: 'peer_small' | 'mid' | 'large';
+  mutual?: boolean;
+  follows_me?: boolean;
+  followed_by_me?: boolean;
+  first_seen: number;
+  last_seen: number;
+  /** Counts of what they did to us / we did to them. */
+  mentions_of_me: number;
+  replies_to_me: number;
+  my_replies: number;
+  tags: string[];
+  notes: string[];
+  last_post_id?: string;
+}
+
+export interface ScheduledPost {
+  id: string;
+  created: number;
+  not_before: number;
+  args: Record<string, unknown>; // publish args
+  status: 'pending' | 'posted' | 'queued' | 'failed' | 'cancelled';
+  result?: unknown;
+  posted_id?: string;
+}
+
+export interface Idea {
+  id: string;
+  ts: number;
+  text: string;
+  source_url?: string;
+  format?: string;
+  tags: string[];
+  status: 'open' | 'used' | 'dropped';
+  used_post_id?: string;
+}
+
+export interface Brand {
+  lane?: string;
+  voice: string[];
+  banned: string[];
+  goals: { followers?: { target: number; by: string }; originals_per_week?: number; reply_within_hours?: number };
+  updated?: number;
+}
+
 export interface State {
   posts: Record<string, MyPost>;
   metrics: Record<string, MetricSnapshot[]>; // post id → snapshots (newest last)
@@ -96,9 +149,14 @@ export interface State {
   queue: QueuedAction[];
   handoff: HandoffItem[];
   seenMentions: Record<string, number>; // mention post id → ts handled
+  mentionAuthors: Record<string, string>; // mention post id → author user id (lets reply credit the person without a paid read)
   lastMentionId?: string;
   followerSnapshots: { ts: number; followers: number; following: number }[];
   me?: { id: string; username: string; name?: string };
+  people: Record<string, Person>;
+  scheduled: ScheduledPost[];
+  ideas: Idea[];
+  brand: Brand;
 }
 
 const EMPTY: State = {
@@ -112,7 +170,12 @@ const EMPTY: State = {
   queue: [],
   handoff: [],
   seenMentions: {},
+  mentionAuthors: {},
   followerSnapshots: [],
+  people: {},
+  scheduled: [],
+  ideas: [],
+  brand: { voice: [], banned: [], goals: {} },
 };
 
 const DAY = 86_400_000;
@@ -199,7 +262,12 @@ export class Store {
     if (s.replyTexts.length > 2_000) s.replyTexts = s.replyTexts.slice(-2_000);
     if (s.follows.length > 5_000) s.follows = s.follows.slice(-5_000);
     for (const [k, ts] of Object.entries(s.readCache)) if (ts < now - 3 * DAY) delete s.readCache[k];
-    for (const [k, ts] of Object.entries(s.seenMentions)) if (ts < now - 30 * DAY) delete s.seenMentions[k];
+    for (const [k, ts] of Object.entries(s.seenMentions)) {
+      if (ts < now - 30 * DAY) {
+        delete s.seenMentions[k];
+        delete s.mentionAuthors[k];
+      }
+    }
     for (const [k, v] of Object.entries(s.repliedConversations)) if (v.ts < now - 90 * DAY) delete s.repliedConversations[k];
     for (const [k, p] of Object.entries(s.posts)) {
       if (p.created_at < now - 90 * DAY) {
@@ -214,6 +282,12 @@ export class Store {
     s.queue = s.queue.filter((q) => q.status === 'pending' || q.ts > now - 30 * DAY);
     for (const q of s.queue) if (q.status !== 'pending' && q.result && JSON.stringify(q.result).length > 2_000) q.result = { truncated: true };
     s.handoff = s.handoff.filter((h) => h.status === 'pending' || (h.resolved_ts ?? h.ts) > now - 90 * DAY);
+    s.scheduled = s.scheduled.filter((x) => x.status === 'pending' || x.created > now - 60 * DAY);
+    const people = Object.values(s.people);
+    if (people.length > 5_000) {
+      people.sort((a, b) => b.last_seen - a.last_seen);
+      s.people = Object.fromEntries(people.slice(0, 5_000).map((p) => [p.id, p]));
+    }
   }
 
   // ---- tokens -------------------------------------------------------------

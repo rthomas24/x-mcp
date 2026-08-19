@@ -79,7 +79,7 @@ describe('x-mcp end to end (mock X API)', () => {
     const { client, close } = await connectInMemory();
     const tools = await client.listTools();
     const names = tools.tools.map((t) => t.name).sort();
-    expect(names).toEqual(['account_pulse', 'approvals', 'conversation', 'delete_post', 'dm', 'doctor', 'draft_check', 'handoff', 'inbox', 'post_performance', 'publish', 'reply', 'repost', 'scout', 'spend', 'who']);
+    expect(names).toEqual(['account_pulse', 'approvals', 'brand', 'conversation', 'delete_post', 'dm', 'doctor', 'draft_check', 'handoff', 'ideas', 'inbox', 'insights', 'people', 'post_performance', 'publish', 'reply', 'report', 'repost', 'schedule', 'scout', 'spend', 'who']);
     const res = await client.listResources();
     expect(res.resources.map((r) => r.uri).sort()).toEqual(['x://boundary', 'x://handoff', 'x://playbook']);
     const pb = await client.readResource({ uri: 'x://playbook' });
@@ -204,6 +204,48 @@ describe('x-mcp end to end (mock X API)', () => {
     const unknownDelete = await client.callTool({ name: 'delete_post', arguments: { post_id: '123456', confirm: true } });
     expect(unknownDelete.isError).toBe(true);
     expect(text(unknownDelete)).toContain('not one this server posted');
+    await close();
+  });
+
+  it('business layer: people ledger fills from inbox + replies; suggest_follows → handoff; scout(circle)', async () => {
+    const { client, close } = await connectInMemory();
+    const top = await client.callTool({ name: 'people', arguments: { action: 'top' } });
+    const ppl = (top.structuredContent as any).people as any[];
+    const peer = ppl.find((p) => p.username === 'small_dev');
+    expect(peer).toBeDefined();
+    expect(peer.replies_to_me).toBeGreaterThanOrEqual(1);
+    expect(peer.my_replies).toBeGreaterThanOrEqual(1);
+    expect(peer.mutual).toBe(true);
+    await client.callTool({ name: 'people', arguments: { action: 'note', username: 'small_dev', text: 'asked about the Optimized-Speed build' } });
+    const get = await client.callTool({ name: 'people', arguments: { action: 'get', username: 'small_dev' } });
+    expect((get.structuredContent as any).person.notes).toContain('asked about the Optimized-Speed build');
+    const circle = await client.callTool({ name: 'scout', arguments: { circle: true, max: 10 } });
+    expect((circle.structuredContent as any).query).toContain('from:small_dev');
+    await close();
+  });
+
+  it('business layer: brand book gates drafts; ideas pipeline; schedule + run_due; insights + report render', async () => {
+    const { client, close } = await connectInMemory();
+    await client.callTool({ name: 'brand', arguments: { action: 'set', lane: 'local LLMs on Apple Silicon', add_voice: ['receipts over opinions'], add_banned: ['synergy'], goals: { followers: { target: 100, by: '2026-12-31' }, originals_per_week: 7 } } });
+    const dc = await client.callTool({ name: 'draft_check', arguments: { text: 'our synergy unlocks 30.5 tok/s. thoughts?' } });
+    expect(text(dc)).toContain('banned words present');
+    const blocked = await client.callTool({ name: 'publish', arguments: { text: 'pure synergy at 30.5 tok/s?', dry_run: true } });
+    expect(text(blocked)).toContain('Brand book');
+    const idea = await client.callTool({ name: 'ideas', arguments: { action: 'add', text: 'TTFT video: 0.39s on a 27B', format: 'video', tags: ['video', 'receipt'] } });
+    const ideaId = (idea.structuredContent as any).idea.id as string;
+    const sched = await client.callTool({ name: 'schedule', arguments: { action: 'add', when: '+0m', post: { text: 'TTFT on a 27B locally: 0.39s. what should I benchmark next?', tags: ['video', 'receipt'], idea_id: ideaId } } });
+    expect((sched.structuredContent as any).scheduled).toBe(true);
+    const ran = await client.callTool({ name: 'schedule', arguments: { action: 'run_due' } });
+    expect((ran.structuredContent as any).ran[0].status).toBe('posted');
+    const ideas = await client.callTool({ name: 'ideas', arguments: { action: 'list', include_used: true } });
+    expect(((ideas.structuredContent as any).ideas as any[]).find((i) => i.id === ideaId).status).toBe('used');
+    const ins = await client.callTool({ name: 'insights', arguments: { days: 30 } });
+    const I = ins.structuredContent as any;
+    expect(I.originals).toBeGreaterThanOrEqual(1);
+    expect(I.goals.followers.target).toBe(100);
+    const rep = await client.callTool({ name: 'report', arguments: { days: 7 } });
+    expect(text(rep)).toContain('# @rtresearching');
+    expect(text(rep)).toContain('## People');
     await close();
   });
 

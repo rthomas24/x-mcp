@@ -6,6 +6,7 @@
  * the agent (and you) can see *why* a rule exists, not just that it does.
  */
 import { PRICE } from './pricing.js';
+import type { Brand } from './store.js';
 
 // ---------------------------------------------------------------------------
 // Ranking weights the agent should optimise for. home-mixer/params/param.rs:308-474
@@ -339,4 +340,16 @@ export function milestones(
     next_reindex_at_likes: age < 48 ? next : undefined,
     notes,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Brand book checks (the persistent voice/lane/banned-words config)
+// ---------------------------------------------------------------------------
+export function brandCheck(brand: Brand, text: string): { banned_hits: string[]; reminders: string[] } {
+  const lower = text.toLowerCase();
+  const banned_hits = brand.banned.filter((w) => w && lower.includes(w.toLowerCase()));
+  const reminders: string[] = [];
+  if (brand.lane) reminders.push(`Lane: ${brand.lane}`);
+  for (const v of brand.voice.slice(0, 6)) reminders.push(`Voice: ${v}`);
+  return { banned_hits, reminders };
 }

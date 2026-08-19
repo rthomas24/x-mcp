@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { ID, USERNAME, intentReply, postUrl } from '../format.js';
 import { PRICE, costOf, postOp } from '../pricing.js';
-import { ALGO, analyzeDraft, findCopypasta, hoursSince, milestones, summonedBy } from '../rules.js';
+import { ALGO, analyzeDraft, brandCheck, findCopypasta, hoursSince, milestones, summonedBy } from '../rules.js';
 import type { MyPost } from '../store.js';
 import { XApiError } from '../x/client.js';
 import { planMedia, uploadMedia, type MediaItem } from '../x/media.js';
@@ -30,108 +30,122 @@ async function uploadAll(ctx: Ctx, items: MediaItem[], altText: string | undefin
   return ids;
 }
 
+export const PublishSchema = z.object({
+  text: z.string().describe('Post text. ≤280 weighted chars unless the account has long-post access. URLs count as 23.'),
+  media_paths: z.array(z.string()).max(4).optional().describe('Absolute local paths under an allowed media root: up to 4 images, or exactly 1 video (mp4/mov/webm) or 1 gif. Do not mix video with images.'),
+  alt_text: z.string().max(1000).optional().describe('Alt text applied to each uploaded image/video.'),
+  thread: z.array(z.string()).max(24).optional().describe('Follow-up posts, each posted as a reply to the previous one (self-thread).'),
+  community_id: ID.optional().describe('Post into an X Community you are a member of.'),
+  share_with_followers: z.boolean().optional().describe('With community_id: also show to followers.'),
+  poll: z.object({ options: z.array(z.string().min(1).max(25)).min(2).max(4), duration_minutes: z.number().int().min(5).max(10080) }).optional(),
+  reply_settings: z.enum(['following', 'mentionedUsers', 'subscribers', 'verified']).optional().describe('Who can reply. Omit for everyone.'),
+  made_with_ai: z.boolean().optional().describe('Disclose AI-generated media.'),
+  long_post_limit: z.number().int().optional().describe('Character limit to validate against if the account has long posts (e.g. 25000). Default 280.'),
+  tags: z.array(z.string().min(1).max(24)).max(8).optional().describe('Experiment tags for `insights` (e.g. ["video","receipt","question"]) — how you learn what works.'),
+  idea_id: z.string().optional().describe('Idea from the `ideas` pipeline this post uses; it is marked used.'),
+  force: z.boolean().optional().describe('Override soft rules (spacing, bait/mention warnings, ≤10s video). Never overrides media roots, the budget or hard API limits.'),
+  dry_run: z.boolean().optional().describe('Analyse and price only; do not upload or post.'),
+});
+export type PublishArgs = z.infer<typeof PublishSchema>;
+
+/** The publish pipeline, callable by the tool and by the scheduler. */
+export async function publishPost(ctx: Ctx, args: PublishArgs) {
+    const me = await ctx.me();
+    const analysis = analyzeDraft(args.text, { kind: 'original', myFollowers: ctx.followers, limit: args.long_post_limit });
+    const threadAnalyses = (args.thread ?? []).map((t) => analyzeDraft(t, { kind: 'reply', limit: args.long_post_limit }));
+    const problems: string[] = [];
+    if (analysis.over_limit) problems.push(analysis.warnings.find((w) => w.includes('limit'))!);
+    for (const [i, ta] of threadAnalyses.entries()) if (ta.over_limit) problems.push(`thread[${i}] is over the character limit (${ta.chars}).`);
+    if (!args.force) {
+      if (analysis.bait.length) problems.push(...analysis.warnings.filter((w) => w.startsWith('Engagement-bait')));
+      if (analysis.mentions.length >= ALGO.MENTION_SPAM_TRIGGER) problems.push(...analysis.warnings.filter((w) => w.includes('mentions')));
+    }
+    const brand = brandCheck(ctx.store.s.brand, [args.text, ...(args.thread ?? [])].join('\n'));
+  if (brand.banned_hits.length && !args.force) problems.push(`Brand book: banned words present — ${brand.banned_hits.join(', ')} (brand tool).`);
+  const gapH = hoursSince(lastOriginalTs(ctx));
+    if (!args.force && gapH < ctx.cfg.minHoursBetweenOriginals)
+      problems.push(`Last original was ${gapH.toFixed(1)}h ago; minimum spacing is ${ctx.cfg.minHoursBetweenOriginals}h (author-diversity decay ×0.625 on the 2nd post in a slate; cold-start lifts only ONE post per request). Wait ${(ctx.cfg.minHoursBetweenOriginals - gapH).toFixed(1)}h or pass force=true.`);
+
+    const media = await planMedia(args.media_paths ?? [], { roots: ctx.cfg.mediaRoots, ffprobePath: ctx.cfg.ffprobePath });
+    problems.push(...media.problems);
+    if (media.gate && !media.gate.ok && !args.force) problems.push(media.gate.reason);
+
+    const ops = [analysis, ...threadAnalyses].map((a) => postOp(a.has_url));
+    const cost = ops.reduce((s, op) => s + costOf(op), 0);
+    const budgetWarn = ctx.affordable(cost, `publish (${ops.length} post${ops.length > 1 ? 's' : ''})`);
+    const plan = {
+      analysis,
+      thread: threadAnalyses.map((a) => ({ chars: a.chars, has_url: a.has_url, mentions: a.mentions })),
+      media: media.items.map((m) => ({ path: m.path, real: m.real, kind: m.kind, mb: Number((m.bytes / 1e6).toFixed(1)) })),
+      video_seconds: media.video_seconds,
+      video_gate: media.gate,
+      hours_since_last_original: Number.isFinite(gapH) ? Number(gapH.toFixed(1)) : null,
+      estimated_cost_usd: Number(cost.toFixed(3)),
+      budget_warning: budgetWarn,
+      problems,
+    };
+    if (problems.length) return ok(`Not posted — ${problems.length} problem(s):\n- ${problems.join('\n- ')}\n\nDraft score ${analysis.score}/100. ${analysis.suggestions.join(' ')}`, { posted: false, ...plan });
+    if (args.dry_run) return ok(`Dry run OK. Score ${analysis.score}/100, cost $${cost.toFixed(3)}. Targets: ${analysis.targets.map((t) => `${t.head} (${t.weight})`).join(', ') || 'none detected'}. ${analysis.suggestions.join(' ')}`, { posted: false, ...plan });
+    if (ctx.needsApproval(args.force)) {
+      const preview = `POST: ${args.text.slice(0, 140)}${args.thread?.length ? ` (+${args.thread.length} thread)` : ''}${media.items.length ? ` [media: ${media.items.map((m) => m.real).join(', ')}]` : ''}${args.force ? ' [force]' : ''} ≈ $${cost.toFixed(3)}`;
+      return ctx.queued('publish', args as Record<string, unknown>, preview, { posted: false, ...plan });
+    }
+
+    const log: string[] = [];
+    const mediaIds = await uploadAll(ctx, media.items, args.alt_text, log);
+    const body: Record<string, unknown> = { text: args.text };
+    if (mediaIds.length) body.media = { media_ids: mediaIds };
+    if (args.community_id) body.community_id = args.community_id;
+    if (args.share_with_followers !== undefined) body.share_with_followers = args.share_with_followers;
+    if (args.poll) body.poll = args.poll;
+    if (args.reply_settings) body.reply_settings = args.reply_settings;
+    if (args.made_with_ai) body.made_with_ai = true;
+    const root = await ctx.client.createPost(body);
+    ctx.charge('publish', ops[0]!, 1, root.id);
+    const now = Date.now();
+    const rootRec: MyPost = { id: root.id, text: args.text, created_at: now, kind: 'original', conversation_id: root.id, has_url: analysis.has_url, media_ids: mediaIds, video_seconds: media.video_seconds, tags: args.tags, idea_id: args.idea_id };
+    ctx.store.update((s) => {
+      s.posts[root.id] = rootRec;
+      if (args.idea_id) {
+        const idea = s.ideas.find((i) => i.id === args.idea_id);
+        if (idea) {
+          idea.status = 'used';
+          idea.used_post_id = root.id;
+        }
+      }
+    });
+
+    const children: { id: string; url: string }[] = [];
+    let prev = root.id;
+    for (const [i, t] of (args.thread ?? []).entries()) {
+      try {
+        const c = await ctx.client.createPost({ text: t, reply: { in_reply_to_tweet_id: prev } });
+        ctx.charge('publish', ops[i + 1]!, 1, c.id);
+        ctx.store.update((s) => (s.posts[c.id] = { id: c.id, text: t, created_at: Date.now(), kind: 'thread_child', conversation_id: root.id, in_reply_to: prev, has_url: threadAnalyses[i]!.has_url }));
+        children.push({ id: c.id, url: postUrl(me.username, c.id) });
+        prev = c.id;
+      } catch (e) {
+        children.push({ id: '', url: `FAILED: ${e instanceof XApiError ? e.message : String(e)}` });
+        break;
+      }
+    }
+    const url = postUrl(me.username, root.id);
+    const ms = milestones(now, { likes: 0 }, ctx.followers);
+    return ok(
+      `Posted ${url}${children.length ? ` + ${children.filter((c) => c.id).length} thread posts` : ''}. Cost $${cost.toFixed(3)}.${budgetWarn ? ` ${budgetWarn}` : ''}\nAlgorithm: ${ms.notes.join(' ')}\nNext: get the first favorite quickly (opens the OON corpus), reply to every reply, no new original for ${ctx.cfg.minHoursBetweenOriginals}h.`,
+      { posted: true, id: root.id, url, thread: children, media_ids: mediaIds, video_seconds: media.video_seconds, cost_usd: Number(cost.toFixed(3)), analysis, milestones: ms, upload_log: log },
+    );
+}
+
 export function registerWriteTools(server: McpServer, ctx: Ctx): void {
   // ---------------------------------------------------------------- publish
-  tool(
-    server,
-    'publish',
-    {
+  tool(server, 'publish', {
       title: 'Publish an original post (optionally a self-thread), with media',
       description: `Create an original post on the authenticated account. Runs the algorithm rules first (mentions ≤1, no engagement bait, spacing ≥${ctx.cfg.minHoursBetweenOriginals}h between originals, video strictly >${ALGO.MIN_VIDEO_SECONDS_EXCLUSIVE}s and video-only), uploads media via the v2 chunked endpoints (files must live under the allowed media roots: ${ctx.cfg.mediaRoots.join(', ')}), enforces the monthly budget ($${PRICE['post.create']}/post, $${PRICE['post.create_with_url']} if the text contains a URL), and records the post so post_performance/account_pulse can track it in algorithm terms (cold-start window, first-favorite → OON corpus, 48h shelf life).
 Set dry_run=true to see the full plan without posting. Use \`thread\` for follow-up posts chained as replies to your own post (they do NOT get their own For You reach — one post per conversation ships — they are for readers who tap in). Quote posts are Enterprise-only on pay-per-use: use handoff(kind="quote") instead.`,
-      inputSchema: z.object({
-        text: z.string().describe('Post text. ≤280 weighted chars unless the account has long-post access. URLs count as 23.'),
-        media_paths: z.array(z.string()).max(4).optional().describe('Absolute local paths under an allowed media root: up to 4 images, or exactly 1 video (mp4/mov/webm) or 1 gif. Do not mix video with images.'),
-        alt_text: z.string().max(1000).optional().describe('Alt text applied to each uploaded image/video.'),
-        thread: z.array(z.string()).max(24).optional().describe('Follow-up posts, each posted as a reply to the previous one (self-thread).'),
-        community_id: ID.optional().describe('Post into an X Community you are a member of.'),
-        share_with_followers: z.boolean().optional().describe('With community_id: also show to followers.'),
-        poll: z.object({ options: z.array(z.string().min(1).max(25)).min(2).max(4), duration_minutes: z.number().int().min(5).max(10080) }).optional(),
-        reply_settings: z.enum(['following', 'mentionedUsers', 'subscribers', 'verified']).optional().describe('Who can reply. Omit for everyone.'),
-        made_with_ai: z.boolean().optional().describe('Disclose AI-generated media.'),
-        long_post_limit: z.number().int().optional().describe('Character limit to validate against if the account has long posts (e.g. 25000). Default 280.'),
-        force: z.boolean().optional().describe('Override soft rules (spacing, bait/mention warnings, ≤10s video). Never overrides media roots, the budget or hard API limits.'),
-        dry_run: z.boolean().optional().describe('Analyse and price only; do not upload or post.'),
-      }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    },
-    async (args) => {
-      const me = await ctx.me();
-      const analysis = analyzeDraft(args.text, { kind: 'original', myFollowers: ctx.followers, limit: args.long_post_limit });
-      const threadAnalyses = (args.thread ?? []).map((t) => analyzeDraft(t, { kind: 'reply', limit: args.long_post_limit }));
-      const problems: string[] = [];
-      if (analysis.over_limit) problems.push(analysis.warnings.find((w) => w.includes('limit'))!);
-      for (const [i, ta] of threadAnalyses.entries()) if (ta.over_limit) problems.push(`thread[${i}] is over the character limit (${ta.chars}).`);
-      if (!args.force) {
-        if (analysis.bait.length) problems.push(...analysis.warnings.filter((w) => w.startsWith('Engagement-bait')));
-        if (analysis.mentions.length >= ALGO.MENTION_SPAM_TRIGGER) problems.push(...analysis.warnings.filter((w) => w.includes('mentions')));
-      }
-      const gapH = hoursSince(lastOriginalTs(ctx));
-      if (!args.force && gapH < ctx.cfg.minHoursBetweenOriginals)
-        problems.push(`Last original was ${gapH.toFixed(1)}h ago; minimum spacing is ${ctx.cfg.minHoursBetweenOriginals}h (author-diversity decay ×0.625 on the 2nd post in a slate; cold-start lifts only ONE post per request). Wait ${(ctx.cfg.minHoursBetweenOriginals - gapH).toFixed(1)}h or pass force=true.`);
-
-      const media = await planMedia(args.media_paths ?? [], { roots: ctx.cfg.mediaRoots, ffprobePath: ctx.cfg.ffprobePath });
-      problems.push(...media.problems);
-      if (media.gate && !media.gate.ok && !args.force) problems.push(media.gate.reason);
-
-      const ops = [analysis, ...threadAnalyses].map((a) => postOp(a.has_url));
-      const cost = ops.reduce((s, op) => s + costOf(op), 0);
-      const budgetWarn = ctx.affordable(cost, `publish (${ops.length} post${ops.length > 1 ? 's' : ''})`);
-      const plan = {
-        analysis,
-        thread: threadAnalyses.map((a) => ({ chars: a.chars, has_url: a.has_url, mentions: a.mentions })),
-        media: media.items.map((m) => ({ path: m.path, real: m.real, kind: m.kind, mb: Number((m.bytes / 1e6).toFixed(1)) })),
-        video_seconds: media.video_seconds,
-        video_gate: media.gate,
-        hours_since_last_original: Number.isFinite(gapH) ? Number(gapH.toFixed(1)) : null,
-        estimated_cost_usd: Number(cost.toFixed(3)),
-        budget_warning: budgetWarn,
-        problems,
-      };
-      if (problems.length) return ok(`Not posted — ${problems.length} problem(s):\n- ${problems.join('\n- ')}\n\nDraft score ${analysis.score}/100. ${analysis.suggestions.join(' ')}`, { posted: false, ...plan });
-      if (args.dry_run) return ok(`Dry run OK. Score ${analysis.score}/100, cost $${cost.toFixed(3)}. Targets: ${analysis.targets.map((t) => `${t.head} (${t.weight})`).join(', ') || 'none detected'}. ${analysis.suggestions.join(' ')}`, { posted: false, ...plan });
-      if (ctx.needsApproval(args.force)) {
-        const preview = `POST: ${args.text.slice(0, 140)}${args.thread?.length ? ` (+${args.thread.length} thread)` : ''}${media.items.length ? ` [media: ${media.items.map((m) => m.real).join(', ')}]` : ''}${args.force ? ' [force]' : ''} ≈ $${cost.toFixed(3)}`;
-        return ctx.queued('publish', args as Record<string, unknown>, preview, { posted: false, ...plan });
-      }
-
-      const log: string[] = [];
-      const mediaIds = await uploadAll(ctx, media.items, args.alt_text, log);
-      const body: Record<string, unknown> = { text: args.text };
-      if (mediaIds.length) body.media = { media_ids: mediaIds };
-      if (args.community_id) body.community_id = args.community_id;
-      if (args.share_with_followers !== undefined) body.share_with_followers = args.share_with_followers;
-      if (args.poll) body.poll = args.poll;
-      if (args.reply_settings) body.reply_settings = args.reply_settings;
-      if (args.made_with_ai) body.made_with_ai = true;
-      const root = await ctx.client.createPost(body);
-      ctx.charge('publish', ops[0]!, 1, root.id);
-      const now = Date.now();
-      const rootRec: MyPost = { id: root.id, text: args.text, created_at: now, kind: 'original', conversation_id: root.id, has_url: analysis.has_url, media_ids: mediaIds, video_seconds: media.video_seconds };
-      ctx.store.update((s) => (s.posts[root.id] = rootRec));
-
-      const children: { id: string; url: string }[] = [];
-      let prev = root.id;
-      for (const [i, t] of (args.thread ?? []).entries()) {
-        try {
-          const c = await ctx.client.createPost({ text: t, reply: { in_reply_to_tweet_id: prev } });
-          ctx.charge('publish', ops[i + 1]!, 1, c.id);
-          ctx.store.update((s) => (s.posts[c.id] = { id: c.id, text: t, created_at: Date.now(), kind: 'thread_child', conversation_id: root.id, in_reply_to: prev, has_url: threadAnalyses[i]!.has_url }));
-          children.push({ id: c.id, url: postUrl(me.username, c.id) });
-          prev = c.id;
-        } catch (e) {
-          children.push({ id: '', url: `FAILED: ${e instanceof XApiError ? e.message : String(e)}` });
-          break;
-        }
-      }
-      const url = postUrl(me.username, root.id);
-      const ms = milestones(now, { likes: 0 }, ctx.followers);
-      return ok(
-        `Posted ${url}${children.length ? ` + ${children.filter((c) => c.id).length} thread posts` : ''}. Cost $${cost.toFixed(3)}.${budgetWarn ? ` ${budgetWarn}` : ''}\nAlgorithm: ${ms.notes.join(' ')}\nNext: get the first favorite quickly (opens the OON corpus), reply to every reply, no new original for ${ctx.cfg.minHoursBetweenOriginals}h.`,
-        { posted: true, id: root.id, url, thread: children, media_ids: mediaIds, video_seconds: media.video_seconds, cost_usd: Number(cost.toFixed(3)), analysis, milestones: ms, upload_log: log },
-      );
-    },
-  );
+    inputSchema: PublishSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  }, (args) => publishPost(ctx, args));
 
   // ------------------------------------------------------------------ reply
   tool(
@@ -164,6 +178,7 @@ Set dry_run=true to see the full plan without posting. Use \`thread\` for follow
 
       // Summoned check: the inbox already proved it, else one paid read.
       let conversationId: string | undefined;
+      let targetAuthor: import('../x/client.js').User | undefined;
       let summoned = Object.hasOwn(ctx.store.s.seenMentions, args.post_id);
       if (!summoned && !args.force) {
         const r = await ctx.client.postsByIds([args.post_id]);
@@ -172,6 +187,7 @@ Set dry_run=true to see the full plan without posting. Use \`thread\` for follow
         if (!target) problems.push(`Post ${args.post_id} not found (deleted, protected, or wrong id).`);
         else {
           conversationId = target.conversation_id;
+          targetAuthor = target.author_id ? r.users.get(target.author_id) : undefined;
           summoned = summonedBy(target, me).summoned;
           if (!summoned) {
             const h = addHandoff(ctx, { kind: 'cold_reply', target_post_id: args.post_id, target_username: r.users.get(target.author_id ?? '')?.username, text: args.text, why: 'cold reply — X rejects un-summoned API replies' });
@@ -203,6 +219,9 @@ Set dry_run=true to see the full plan without posting. Use \`thread\` for follow
         throw e;
       }
       ctx.charge('reply', op, 1, `reply→${args.post_id}`);
+      const knownAuthor = ctx.store.s.mentionAuthors[args.post_id];
+      const person = targetAuthor ?? (knownAuthor ? ctx.store.s.people[knownAuthor] : undefined);
+      if (person) ctx.touchPerson(person, 'my_reply', args.post_id);
       ctx.store.update((s) => {
         s.posts[created.id] = { id: created.id, text: args.text, created_at: Date.now(), kind: 'reply', in_reply_to: args.post_id, conversation_id: conversationId, has_url: analysis.has_url, media_ids: mediaIds };
         s.repliedConversations[args.post_id] = { post_id: created.id, ts: Date.now() };

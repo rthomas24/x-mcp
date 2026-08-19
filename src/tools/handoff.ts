@@ -120,6 +120,7 @@ Why this matters algorithmically: quote posts are *originals* to the ranker (col
             const u = byName.get(h.target_username.toLowerCase());
             if (u) {
               ctx.store.update((st) => st.follows.push({ user_id: u.id, username: u.username, ts: Date.now(), action: 'follow' }));
+              ctx.touchPerson(u, 'followed');
               resolve(h.id);
             }
           }
