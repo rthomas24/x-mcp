@@ -1,6 +1,6 @@
 {
   "name": "x-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Opinionated MCP server for running an X account with an agent: algorithm-aware publishing, inbox/scout, a human handoff queue with one-tap intent links, a pay-per-use cost ledger, and hard safety rails. X API v2, OAuth 2.0 PKCE.",
   "license": "MIT",
   "author": "Ryan Thomas",

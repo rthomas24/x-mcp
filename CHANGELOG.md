@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 — 2026-08-19
+
+- Business layer: `people` (relationship ledger auto-built from interactions, `suggest_follows`), `schedule` (calendar, `next_best` hours learned from your own history, `run_due`, `x-mcp tick`), `insights` (OON-entry rate, engagement@24h, by kind/tag/hour, goals, advice), `brand` (lane/voice/banned words/goals, enforced in `draft_check`/`publish`), `ideas` (pipeline → `publish(idea_id)`), `report` (owner digest, `x-mcp report`).
+- `scout(circle=true)` searches your top people's fresh originals; `publish` accepts `tags`/`idea_id`; `account_pulse` shows due scheduled posts.
+- Hardening from the security review: env only from the state dir, `X_API_BASE` locked, media roots + realpath checks, numeric-id validation and encoded paths, approval on by default with `force` always parked, `delete_post` limited to known posts, HTTP token + Host/Origin checks, synchronous multi-process-safe state writes, untrusted-content labelling.
+
 ## 0.1.0 — 2026-08-19
 
 Initial release.

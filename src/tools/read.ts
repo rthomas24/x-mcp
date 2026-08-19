@@ -154,6 +154,7 @@ export function registerReadTools(server: McpServer, ctx: Ctx): void {
       const inbox = men.posts.filter((p) => !Object.hasOwn(ctx.store.s.repliedConversations, p.id) && p.author_id !== me.id).map((p) => describePost(p, men.users));
       const pendingHandoff = ctx.store.s.handoff.filter((q) => q.status === 'pending').length;
       const pendingApprovals = ctx.store.s.queue.filter((q) => q.status === 'pending').length;
+      const dueScheduled = ctx.store.s.scheduled.filter((x) => x.status === 'pending' && x.not_before <= Date.now()).length;
       const spend = ctx.ledger.summary();
       const text = [
         `@${me.username}: ${me.metrics.followers} followers (${followerDelta >= 0 ? '+' : ''}${followerDelta} since last pulse), following ${me.metrics.following}.`,
@@ -162,12 +163,13 @@ export function registerReadTools(server: McpServer, ctx: Ctx): void {
         inbox.length ? `Inbox (answer with the reply tool):\n${inbox.slice(0, 8).map((i) => `  • @${who(i)}: ${oneLine(i.text, 90)} [${i.id}]`).join('\n')}` : 'Inbox: nothing new.',
         pendingHandoff ? `Human queue: ${pendingHandoff} pending (handoff list).` : '',
         pendingApprovals ? `Approval queue: ${pendingApprovals} pending (x-mcp approve).` : '',
+        dueScheduled ? `Calendar: ${dueScheduled} scheduled post(s) due — schedule(run_due).` : '',
         `Spend: $${spend.spent_usd} of $${spend.budget_usd} this month (${spend.pct_used}%); this call ≈ $${(c1.usd + c2.usd + costOf('read.user')).toFixed(3)}.`,
         UNTRUSTED_NOTE,
       ]
         .filter(Boolean)
         .join('\n');
-      return ok(text, { me: { id: me.id, username: me.username, followers: me.metrics.followers, following: me.metrics.following, follower_delta: followerDelta }, posts: rows, inbox, human_queue_pending: pendingHandoff, approvals_pending: pendingApprovals, spend, rate_limits: ctx.client.rateSnapshot });
+      return ok(text, { me: { id: me.id, username: me.username, followers: me.metrics.followers, following: me.metrics.following, follower_delta: followerDelta }, posts: rows, inbox, human_queue_pending: pendingHandoff, approvals_pending: pendingApprovals, scheduled_due: dueScheduled, spend, rate_limits: ctx.client.rateSnapshot });
     },
   );
 

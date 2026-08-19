@@ -24,7 +24,7 @@ import { registerMetaTools } from './tools/meta.js';
 import { registerReadTools } from './tools/read.js';
 import { registerWriteTools } from './tools/write.js';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 
 export interface CreateServerOptions {
   config?: Config;

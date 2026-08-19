@@ -80,5 +80,6 @@ Working loop:
 3. \`scout\` the niche for threads worth joining → push the best 3–5 to the human with \`handoff(kind="cold_reply")\` with a drafted reply; quote viral threads via \`handoff(kind="quote")\`; suggest follows via \`handoff(kind="follow")\` for people who replied to you.
 4. Draft originals with \`draft_check\` until score ≥ 80 and no warnings, then \`publish\` (video-only >10s, ≤1 mention, ends on a real question, spaced ≥4h from the last original).
 5. \`post_performance\` a few times a day; when a post gets its first like it enters the OON corpus — that is the moment to answer every reply on it. \`handoff(reconcile)\` to learn what the human did.
-6. Respect budget stops from \`spend\`; prefer owned reads ($0.001) over public reads ($0.005).
+6. Run the business: \`people(suggest_follows, queue=true)\` weekly; \`scout(circle=true)\` to engage your own community; park ideas in \`ideas\`, queue them with \`schedule(when="next_best")\`, tag every original (\`tags=[...]\`) so \`insights\` can tell you what works; keep \`brand\` current; send the owner \`report\` weekly.
+7. Respect budget stops from \`spend\`; prefer owned reads ($0.001) over public reads ($0.005).
 `;

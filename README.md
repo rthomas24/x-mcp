@@ -2,11 +2,12 @@
 
 An opinionated MCP server for running an X account with an agent.
 
-It is not a wrapper around the X API. It is a small operator that knows three things the API does not tell you:
+It is not a wrapper around the X API. It is a small operator that knows four things the API does not tell you:
 
 1. **How For You ranks** — the weights, gates and filters from X's open-sourced algorithm (xai-org/x-algorithm) are built into every tool as guardrails and advice: reply weight 5→20 for mutuals, copy-link share 20, like 0.5; strictly >10s video; ≤1 @-mention; no engagement bait; ≥4h between originals; the first favorite opens the out-of-network corpus; sub-1k-follower cold-start lift; 24h/48h windows.
 2. **What the pay-per-use API actually allows** — since 2026 X rejects un-summoned replies and removed follows, likes and quote posts from self-serve. The tools do everything that is allowed and hand the human a **one-tap intent link** for the rest, then **auto-reconcile** what the human did from $0.001 owned reads.
 3. **What every call costs** — a local ledger mirrors X's per-resource pricing (with the 24h dedup), enforces a monthly budget, and warns you before the $0.20 "post with URL".
+4. **What a business keeps** — a relationship ledger of everyone who engaged (and who to follow back), a calendar that learns your best hours, a brand book every session shares, an idea pipeline, and an insights/report loop so the agent steers on its own numbers instead of vibes.
 
 Built on the MCP TypeScript SDK v2. stdio by default, Streamable HTTP optional. Zero runtime dependencies beyond the SDK and zod.
 
@@ -26,7 +27,13 @@ Built on the MCP TypeScript SDK v2. stdio by default, Streamable HTTP optional. 
 | `delete_post` | Delete your post | $0.01 |
 | `dm` | DM only after the recipient DM'd you (policy) | $0.015 |
 | `handoff` | Human queue: quote / follow / like / cold reply / manual post → x.com/intent links; `reconcile` detects completion from owned reads | $0.001 on reconcile |
-| `draft_check` | Score a draft (and variants) against the For You rules | free |
+| `people` | Relationship ledger (CRM) auto-built from every mention/reply: top engagers, notes/tags, `suggest_follows` → one-tap follow links; `scout(circle=true)` finds your community's fresh posts | free |
+| `schedule` | Content calendar: `when` = ISO / `+2h` / `next_best` (your own best hours from history); `run_due` posts through the normal pipeline; `x-mcp tick` for cron | free |
+| `insights` | What works: OON-entry rate (first like within 24h), engagement@24h, reply rate on inbound, by kind/tag/hour, top posts, follower deltas, spend per engagement, goal progress, advice | free |
+| `brand` | Brand book: lane, voice rules, banned words (enforced in `draft_check`/`publish`), goals | free |
+| `ideas` | Idea bank → `publish(idea_id)` marks used | free |
+| `report` | Owner digest in markdown (also `x-mcp report 7`) | free |
+| `draft_check` | Score a draft (and variants) against the For You rules + the brand book | free |
 | `spend` | Ledger: month-to-date, by op, by tool, price table | free |
 | `doctor` | Auth, scopes, config, rate limits, API boundary | free |
 | `approvals` | Approval-mode queue (list/reject; approving is CLI-only) | free |
@@ -68,6 +75,11 @@ Resources: `x://playbook` (the rules), `x://boundary` (what the API allows), `x:
    HTTP instead of stdio: `X_MCP_HTTP_TOKEN=SECRET node dist/bin.js --http --port 8478` → `url: http://127.0.0.1:8478/mcp`, header `Authorization: Bearer SECRET`. A token is always required (one is generated and printed if you don't set it); Host/Origin are checked against localhost.
 
 5. **Run the loop.** Ask the agent to use the `operate` prompt (or paste it). Check `node dist/bin.js queue` for anything waiting on you; `node dist/bin.js approve --all` executes queued API actions; tap the intent links for the human-only actions and run `handoff(reconcile)` (or let the agent do it) so the queue clears itself.
+6. **Put `tick` on a timer** (every 15 min is plenty) so scheduled posts go out, handoffs reconcile, and metrics get snapshotted for `insights`:
+   ```bash
+   */15 * * * * cd /absolute/path/to/x-mcp && node dist/bin.js tick >> ~/.x-mcp/tick.log 2>&1
+   ```
+   (Hermes users: a cron job that calls `schedule(run_due)` + `handoff(reconcile)` + `post_performance` does the same.)
 
 ## Configuration (env)
 
