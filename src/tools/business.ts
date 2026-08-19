@@ -526,10 +526,7 @@ Pair with scout(circle=true) to find their fresh posts to engage with.`,
       if (spend.pct_used >= 80) items.push({ priority: 65, action: `Budget ${spend.pct_used}% used — prefer owned reads, pause scout`, call: 'spend', why: 'monthly budget stop' });
       items.sort((a, b) => b.priority - a.priority);
       const top = items.slice(0, args.limit ?? 8);
-      return ok(top.length ? top.map((i, n) => `${n + 1}. ${i.action}
-   → ${i.call}
-   (${i.why})`).join('
-') : 'Nothing pressing. Post an original at the next best hour.', { items: top, next_best_iso: bt.next_best_iso, spacing_open: gapH >= ctx.cfg.minHoursBetweenOriginals });
+      return ok(top.length ? top.map((i, n) => `${n + 1}. ${i.action}\n   → ${i.call}\n   (${i.why})`).join('\n') : 'Nothing pressing. Post an original at the next best hour.', { items: top, next_best_iso: bt.next_best_iso, spacing_open: gapH >= ctx.cfg.minHoursBetweenOriginals });
     },
   );
 
